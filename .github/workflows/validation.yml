@@ -20,28 +20,51 @@ on:
 permissions:
   contents: read
 
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
-  validate:
+  runner-diagnostic:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Checkout repository without external actions
+      - name: Confirm runner and Python
+        run: |
+          echo "runner-ready"
+          python3 --version
+          git --version
+
+  checkout-smoke:
+    needs: runner-diagnostic
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout without external actions
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           git init .
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git fetch --no-tags --depth=1 origin "${TARGET_SHA}"
           git checkout --detach FETCH_HEAD
+          test -s README.md
+          test -s validation/engine.py
 
-      - name: Report runtime
+  syntax-and-data:
+    needs: checkout-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 --version
-          git rev-parse HEAD
-
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${TARGET_SHA}"
+          git checkout --detach FETCH_HEAD
       - name: Compile validation code
         run: python3 -m compileall -q validation replay tests
-
       - name: Validate JSON artifacts
         run: |
           python3 -m json.tool schemas/equation-record.schema.json > /dev/null
@@ -51,14 +74,38 @@ jobs:
           python3 -m json.tool manifests/validation-suite-v1.json > /dev/null
           python3 -m json.tool notebooks/reproducibility_walkthrough.ipynb > /dev/null
 
-      - name: Run deterministic replay
-        run: python3 replay/run_replay.py
-
-      - name: Run unit tests
-        run: python3 -m unittest discover -s tests -v
-
-      - name: Verify report output
+  deterministic-replay:
+    needs: syntax-and-data
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${TARGET_SHA}"
+          git checkout --detach FETCH_HEAD
+      - name: Run replay and verify report
+        run: |
+          python3 replay/run_replay.py
           test -s reports/latest_validation_results.json
           python3 -m json.tool reports/latest_validation_results.json > /dev/null
           grep -q '"suite_passed": true' reports/latest_validation_results.json
+
+  unit-tests:
+    needs: deterministic-replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout without external actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${TARGET_SHA}"
+          git checkout --detach FETCH_HEAD
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
